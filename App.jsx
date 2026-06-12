@@ -79,7 +79,7 @@ export default function App(){
       </div>
 
       <div style={{padding:"0 16px"}}>
-        {tab==="home" && <Home board={board} live={live} />}
+        {tab==="home" && <Home board={board} live={live} allPicks={allPicks} me={me} />}
         {tab==="leaderboard" && <Leaderboard board={board} />}
         {tab==="mypicks" && <MyPicks me={me} allPicks={allPicks} chooseMe={chooseMe} board={board} />}
         {tab==="everyone" && <Everyone allPicks={allPicks} />}
@@ -92,12 +92,26 @@ export default function App(){
 }
 
 // ── HOME ──
-function Home({board,live}){
+function Home({board,live,allPicks,me}){
   if(!board||!live) return <Loading/>;
   const rows = board.leaderboard||[];
   const top3 = rows.slice(0,3);
   const matches = (live.matches||[]).slice().sort((a,b)=>new Date(a.datetime)-new Date(b.datetime));
   const now = Date.now();
+
+  // tally everyone's pick for a given game id -> {home, draw, away, total}
+  function tally(gid){
+    const t={home:0,draw:0,away:0};
+    (allPicks||[]).forEach(p=>{ const v=p.picks?.[gid]; if(v&&t[v]!==undefined) t[v]++; });
+    return {...t, total:t.home+t.draw+t.away};
+  }
+  // the logged-in user's pick for a game, only if identified
+  function myPick(gid){
+    if(!me) return null;
+    const rec=(allPicks||[]).find(p=>p.username===me);
+    return rec?.picks?.[gid] || null;
+  }
+
   // "today/next" games: in progress, or the soonest upcoming day
   const liveNow = matches.filter(m=>m.status==="in_progress");
   const upcoming = matches.filter(m=>m.status==="scheduled");
@@ -119,14 +133,28 @@ function Home({board,live}){
         {todays.map(m=>{
           const playing=m.status==="in_progress", done=m.status==="completed";
           const t=new Date(m.datetime).toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"});
+          const tl=tally(m.gid);
+          const mine=myPick(m.gid);
+          const minePretty = mine==="home"?m.home : mine==="away"?m.away : mine==="draw"?"Draw" : null;
           return (
-            <div key={m.gid} style={{minWidth:150,background:"#fff",border:`1px solid ${playing?C.live:C.line}`,
+            <div key={m.gid} style={{minWidth:172,background:"#fff",border:`1px solid ${playing?C.live:C.line}`,
               borderRadius:12,padding:"10px 12px"}}>
               <div style={{fontSize:10,color:playing?C.live:C.mute,fontWeight:700,marginBottom:6,letterSpacing:.5}}>
                 {playing?<span><span className="livedot">●</span> LIVE</span>:done?"FT":t} · GRP {m.group}
               </div>
               <ScoreLine flag={FLAG[m.home]} team={m.home} score={m.homeScore} show={playing||done}/>
               <ScoreLine flag={FLAG[m.away]} team={m.away} score={m.awayScore} show={playing||done}/>
+
+              {/* pick distribution */}
+              <PickBar tl={tl} homeTeam={m.home} awayTeam={m.away}/>
+
+              {/* the logged-in user's pick, only if identified */}
+              {minePretty && (
+                <div style={{marginTop:7,fontSize:11,color:C.grass,fontWeight:700,
+                  borderTop:`1px solid ${C.line}`,paddingTop:6}}>
+                  Your pick: {mine==="draw"?"Draw":`${FLAG[minePretty]||""} ${minePretty}`}
+                </div>
+              )}
             </div>
           );
         })}
@@ -377,6 +405,30 @@ function ScoreLine({flag,team,score,show}){
     <span style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{flag} {team}</span>
     <span style={{fontFamily:F_DISP,fontSize:18,color:show?C.ink:"transparent",minWidth:16,textAlign:"right"}}>{show?(score??0):"–"}</span>
   </div>;
+}
+function PickBar({tl,homeTeam,awayTeam}){
+  if(!tl || tl.total===0){
+    return <div style={{marginTop:7,fontSize:10.5,color:C.mute}}>No picks recorded</div>;
+  }
+  const seg=[
+    {n:tl.home, c:C.grass,  lbl:"H"},
+    {n:tl.draw, c:C.mute,   lbl:"D"},
+    {n:tl.away, c:C.gold,   lbl:"A"},
+  ];
+  return (
+    <div style={{marginTop:8}}>
+      <div style={{display:"flex",height:8,borderRadius:99,overflow:"hidden",background:C.line}}>
+        {seg.map((s,i)=> s.n>0 && (
+          <div key={i} style={{width:`${(s.n/tl.total)*100}%`,background:s.c}}/>
+        ))}
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.mute,marginTop:4}}>
+        <span><b style={{color:C.grass}}>{tl.home}</b> {homeTeam.length>8?homeTeam.slice(0,7)+"…":homeTeam}</span>
+        <span><b style={{color:C.mute}}>{tl.draw}</b> draw</span>
+        <span><b style={{color:C.gold}}>{tl.away}</b> {awayTeam.length>8?awayTeam.slice(0,7)+"…":awayTeam}</span>
+      </div>
+    </div>
+  );
 }
 function SecLabel({children}){
   return <div style={{fontSize:11,fontWeight:700,letterSpacing:1.2,color:C.grass,margin:"4px 0 10px"}}>{children}</div>;
