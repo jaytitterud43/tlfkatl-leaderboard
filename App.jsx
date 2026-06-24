@@ -40,6 +40,33 @@ const C = { ink:"#0E1B2A", paper:"#F4EFE6", grass:"#0B6E4F", grassDk:"#084d37",
 const F_DISP="'Bebas Neue','Arial Narrow',sans-serif";
 const F_BODY="'DM Sans',system-ui,sans-serif";
 
+// Build {gid: "home"|"draw"|"away"} for COMPLETED games only, from the live feed.
+function resultsFromLive(live){
+  const out={};
+  (live?.matches||[]).forEach(m=>{
+    if(m.status!=="completed") return;
+    const h=m.homeScore, a=m.awayScore;
+    if(h==null||a==null) return;
+    out[m.gid] = h>a?"home" : h<a?"away" : "draw";
+  });
+  return out;
+}
+// Given a person's picks + the results map, count correct/wrong on PLAYED games only.
+function correctness(picks, results){
+  let correct=0, wrong=0;
+  const per=[];
+  for(const gid of Object.keys(results)){
+    const pick=picks?.[gid];
+    if(!pick) continue;                 // they had no pick (shouldn't happen, but safe)
+    const hit = pick===results[gid];
+    hit?correct++:wrong++;
+    per.push({gid, pick, actual:results[gid], hit});
+  }
+  const played = correct+wrong;
+  const pct = played? Math.ceil((correct/played)*100) : null;   // round UP per request
+  return { correct, wrong, played, pct, per };
+}
+
 export default function App(){
   const [tab,setTab] = useState("home");
   const [me,setMe] = useState(null);            // username string
@@ -80,8 +107,8 @@ export default function App(){
 
       <div style={{padding:"0 16px"}}>
         {tab==="home" && <Home board={board} live={live} allPicks={allPicks} me={me} />}
-        {tab==="leaderboard" && <Leaderboard board={board} />}
-        {tab==="mypicks" && <MyPicks me={me} allPicks={allPicks} chooseMe={chooseMe} board={board} />}
+        {tab==="leaderboard" && <Leaderboard board={board} live={live} />}
+        {tab==="mypicks" && <MyPicks me={me} allPicks={allPicks} chooseMe={chooseMe} board={board} live={live} />}
         {tab==="everyone" && <Everyone allPicks={allPicks} />}
         {tab==="rules" && <Rules />}
       </div>
@@ -110,6 +137,12 @@ function Home({board,live,allPicks,me}){
     if(!me) return null;
     const rec=(allPicks||[]).find(p=>p.username===me);
     return rec?.picks?.[gid] || null;
+  }
+  // names grouped by pick for a game -> {home:[...], draw:[...], away:[...]}
+  function namesByPick(gid){
+    const g={home:[],draw:[],away:[]};
+    (allPicks||[]).forEach(p=>{ const v=p.picks?.[gid]; if(v&&g[v]) g[v].push(p.username); });
+    return g;
   }
 
   // "today/next" games: in progress, or the soonest upcoming day
@@ -145,8 +178,8 @@ function Home({board,live,allPicks,me}){
               <ScoreLine flag={FLAG[m.home]} team={m.home} score={m.homeScore} show={playing||done}/>
               <ScoreLine flag={FLAG[m.away]} team={m.away} score={m.awayScore} show={playing||done}/>
 
-              {/* pick distribution */}
-              <PickBar tl={tl} homeTeam={m.home} awayTeam={m.away}/>
+              {/* pick distribution (tap to expand who picked what) */}
+              <PickBar tl={tl} homeTeam={m.home} awayTeam={m.away} names={namesByPick(m.gid)}/>
 
               {/* the logged-in user's pick, only if identified */}
               {minePretty && (
@@ -205,15 +238,20 @@ function Podium({top3,anyPoints}){
 }
 
 // ── LEADERBOARD ──
-function Leaderboard({board}){
+function Leaderboard({board,live}){
   if(!board) return <Loading/>;
   const rows=board.leaderboard||[];
   const topPts=Math.max(...rows.map(r=>r.points),0);
   const anyPoints=topPts>0;
+  // games played so far = completed games in the live feed
+  const played = Object.keys(resultsFromLive(live)).length;
   return (
     <div className="sec">
       <SecLabel>FULL STANDINGS</SecLabel>
-      {rows.map((r,i)=>(
+      {rows.map((r,i)=>{
+        const correct = r.detail?.correctGames ?? 0;
+        const pct = played ? Math.ceil((correct/played)*100) : null;
+        return (
         <div key={r.username} style={{display:"flex",alignItems:"center",gap:11,background:"#fff",
           border:`1px solid ${C.line}`,borderRadius:13,padding:"11px 13px",marginBottom:8}}>
           <div style={{fontFamily:F_DISP,fontSize:26,minWidth:30,textAlign:"center",
@@ -222,10 +260,11 @@ function Leaderboard({board}){
             <div style={{fontWeight:700,fontSize:14.5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
               {r.username}{anyPoints&&r.points===topPts&&" 🔥"}
             </div>
-            <div style={{fontSize:12,color:C.mute,marginTop:2,display:"flex",gap:9}}>
+            <div style={{fontSize:12,color:C.mute,marginTop:2,display:"flex",gap:9,alignItems:"center"}}>
+              {pct!==null && <span style={{fontWeight:700,color:C.ink}}>{pct}%</span>}
               <span>🐴 {FLAG[r.darkhorse]||"—"}</span>
               <span>💀 {FLAG[r.flop]||"—"}</span>
-              <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:110}}>👟 {r.goldenboot||"—"}</span>
+              <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:96}}>👟 {r.goldenboot||"—"}</span>
             </div>
           </div>
           <div style={{textAlign:"right"}}>
@@ -233,13 +272,14 @@ function Leaderboard({board}){
             <div style={{fontSize:10,color:C.mute}}>PTS</div>
           </div>
         </div>
-      ))}
+      );})}
+      {played===0 && <div style={{fontSize:12,color:C.mute,textAlign:"center",marginTop:6}}>% correct appears once games are played.</div>}
     </div>
   );
 }
 
 // ── MY PICKS ──
-function MyPicks({me,allPicks,chooseMe,board}){
+function MyPicks({me,allPicks,chooseMe,board,live}){
   if(!allPicks) return <Loading/>;
   const names = allPicks.map(p=>p.username);
   if(!me || !names.includes(me)){
@@ -257,6 +297,8 @@ function MyPicks({me,allPicks,chooseMe,board}){
   }
   const mine = allPicks.find(p=>p.username===me);
   const myScore = (board?.leaderboard||[]).find(r=>r.username===me);
+  const results = resultsFromLive(live);
+  const cc = correctness(mine?.picks, results);
   return (
     <div className="sec">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
@@ -264,14 +306,62 @@ function MyPicks({me,allPicks,chooseMe,board}){
         <button onClick={()=>chooseMe("")} style={{background:"none",border:"none",color:C.grass,
           fontSize:12,fontWeight:700,cursor:"pointer"}}>not you?</button>
       </div>
-      {myScore && <div style={{background:C.grass,color:"#fff",borderRadius:13,padding:"12px 15px",marginBottom:16,
+      {myScore && <div style={{background:C.grass,color:"#fff",borderRadius:13,padding:"12px 15px",marginBottom:12,
         display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <span style={{fontWeight:700}}>Your total</span>
         <span style={{fontFamily:F_DISP,fontSize:30}}>{myScore.points} pts</span>
       </div>}
+
+      {/* right / wrong scorecard */}
+      <Scorecard cc={cc} />
+
       <PicksDetail rec={mine}/>
     </div>
   );
+}
+
+// right/wrong summary + per-game list (played games only)
+function Scorecard({cc}){
+  if(!cc || cc.played===0){
+    return <div style={{background:"#fff",border:`1px solid ${C.line}`,borderRadius:13,padding:"12px 15px",
+      marginBottom:16,fontSize:13,color:C.mute}}>Your hits and misses show up here once your games are played.</div>;
+  }
+  const teamOf=(gid,side)=>{
+    const L=gid[0], idx=parseInt(gid.slice(1))-1;
+    const [i,j]=PAIRINGS[idx]; const t=GROUPS[L];
+    return side==="home"?t[i]:t[j];
+  };
+  const outcomeLabel=(gid,o)=> o==="draw"?"Draw":`${FLAG[teamOf(gid,o)]||""} ${teamOf(gid,o)}`;
+  const ordered=cc.per.slice().sort((a,b)=> a.gid<b.gid?-1:1);
+  return (
+    <div style={{marginBottom:16}}>
+      <div style={{display:"flex",gap:8,marginBottom:10}}>
+        <Stat n={cc.correct} lbl="CORRECT" color={C.grass}/>
+        <Stat n={cc.wrong} lbl="WRONG" color={C.red}/>
+        <Stat n={`${cc.pct}%`} lbl="ACCURACY" color={C.ink}/>
+      </div>
+      <div style={{background:"#fff",border:`1px solid ${C.line}`,borderRadius:13,padding:"6px 14px"}}>
+        {ordered.map(g=>(
+          <div key={g.gid} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+            padding:"7px 0",borderBottom:`1px solid ${C.paper}`,fontSize:12.5}}>
+            <span style={{color:C.mute}}>
+              <b style={{color:C.ink}}>{g.gid}</b> · you: {outcomeLabel(g.gid,g.pick)}
+            </span>
+            <span style={{fontWeight:700,color:g.hit?C.grass:C.red}}>
+              {g.hit?"✅":"❌"} {outcomeLabel(g.gid,g.actual)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+function Stat({n,lbl,color}){
+  return <div style={{flex:1,background:"#fff",border:`1px solid ${C.line}`,borderRadius:11,
+    padding:"8px 4px",textAlign:"center"}}>
+    <div style={{fontFamily:F_DISP,fontSize:26,color,lineHeight:1}}>{n}</div>
+    <div style={{fontSize:9.5,color:C.mute,letterSpacing:.5,marginTop:2}}>{lbl}</div>
+  </div>;
 }
 
 // ── EVERYONE'S PICKS ──
@@ -406,7 +496,8 @@ function ScoreLine({flag,team,score,show}){
     <span style={{fontFamily:F_DISP,fontSize:18,color:show?C.ink:"transparent",minWidth:16,textAlign:"right"}}>{show?(score??0):"–"}</span>
   </div>;
 }
-function PickBar({tl,homeTeam,awayTeam}){
+function PickBar({tl,homeTeam,awayTeam,names}){
+  const [open,setOpen]=useState(false);
   if(!tl || tl.total===0){
     return <div style={{marginTop:7,fontSize:10.5,color:C.mute}}>No picks recorded</div>;
   }
@@ -417,16 +508,35 @@ function PickBar({tl,homeTeam,awayTeam}){
   ];
   return (
     <div style={{marginTop:8}}>
-      <div style={{display:"flex",height:8,borderRadius:99,overflow:"hidden",background:C.line}}>
-        {seg.map((s,i)=> s.n>0 && (
-          <div key={i} style={{width:`${(s.n/tl.total)*100}%`,background:s.c}}/>
-        ))}
+      <div onClick={()=>setOpen(o=>!o)} style={{cursor:"pointer"}}>
+        <div style={{display:"flex",height:8,borderRadius:99,overflow:"hidden",background:C.line}}>
+          {seg.map((s,i)=> s.n>0 && (
+            <div key={i} style={{width:`${(s.n/tl.total)*100}%`,background:s.c}}/>
+          ))}
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.mute,marginTop:4}}>
+          <span><b style={{color:C.grass}}>{tl.home}</b> {homeTeam.length>8?homeTeam.slice(0,7)+"…":homeTeam}</span>
+          <span><b style={{color:C.mute}}>{tl.draw}</b> draw</span>
+          <span><b style={{color:C.gold}}>{tl.away}</b> {awayTeam.length>8?awayTeam.slice(0,7)+"…":awayTeam}</span>
+        </div>
+        <div style={{textAlign:"center",fontSize:9.5,color:C.mute,marginTop:3}}>{open?"tap to hide ▴":"tap to see who ▾"}</div>
       </div>
-      <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.mute,marginTop:4}}>
-        <span><b style={{color:C.grass}}>{tl.home}</b> {homeTeam.length>8?homeTeam.slice(0,7)+"…":homeTeam}</span>
-        <span><b style={{color:C.mute}}>{tl.draw}</b> draw</span>
-        <span><b style={{color:C.gold}}>{tl.away}</b> {awayTeam.length>8?awayTeam.slice(0,7)+"…":awayTeam}</span>
-      </div>
+      {open && names && (
+        <div style={{marginTop:8,borderTop:`1px solid ${C.line}`,paddingTop:8,display:"flex",flexDirection:"column",gap:6}}>
+          <NameGroup color={C.grass} label={homeTeam} list={names.home}/>
+          <NameGroup color={C.mute}  label="Draw"     list={names.draw}/>
+          <NameGroup color={C.gold}  label={awayTeam} list={names.away}/>
+        </div>
+      )}
+    </div>
+  );
+}
+function NameGroup({color,label,list}){
+  if(!list||list.length===0) return null;
+  return (
+    <div style={{fontSize:11}}>
+      <span style={{fontWeight:700,color}}>{label}:</span>{" "}
+      <span style={{color:C.ink}}>{list.join(", ")}</span>
     </div>
   );
 }
