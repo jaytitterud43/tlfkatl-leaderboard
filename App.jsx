@@ -73,18 +73,22 @@ export default function App(){
   const [board,setBoard] = useState(null);
   const [live,setLive] = useState(null);
   const [allPicks,setAllPicks] = useState(null);
+  const [knockout,setKnockout] = useState(null);
+  const [brackets,setBrackets] = useState(null);
 
   // identity: remembered on device
   useEffect(()=>{ try{ const u=localStorage.getItem("tlfkatl_me"); if(u) setMe(u); }catch(e){} },[]);
 
   async function load(){
     try{
-      const [s,l,p] = await Promise.all([
+      const [s,l,p,k,b] = await Promise.all([
         fetch(`${API}/scores`).then(r=>r.json()),
         fetch(`${API}/live`).then(r=>r.json()),
         fetch(`${API}/picks`).then(r=>r.json()),
+        fetch(`${API}/knockout`).then(r=>r.json()).catch(()=>null),
+        fetch(`${API}/brackets`).then(r=>r.json()).catch(()=>null),
       ]);
-      setBoard(s); setLive(l); setAllPicks(p);
+      setBoard(s); setLive(l); setAllPicks(p); setKnockout(k); setBrackets(b);
     }catch(e){}
   }
   useEffect(()=>{ load(); const t=setInterval(load,60*1000); return ()=>clearInterval(t); },[]);
@@ -110,6 +114,7 @@ export default function App(){
         {tab==="leaderboard" && <Leaderboard board={board} live={live} />}
         {tab==="mypicks" && <MyPicks me={me} allPicks={allPicks} chooseMe={chooseMe} board={board} live={live} />}
         {tab==="everyone" && <Everyone allPicks={allPicks} />}
+        {tab==="bracket" && <BracketView knockout={knockout} brackets={brackets} board={board} me={me} />}
         {tab==="rules" && <Rules />}
       </div>
 
@@ -269,7 +274,7 @@ function Leaderboard({board,live}){
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontFamily:F_DISP,fontSize:28,lineHeight:.9,color:C.grass}}>{r.points}</div>
-            <div style={{fontSize:10,color:C.mute}}>PTS</div>
+            <div style={{fontSize:10,color:C.mute}}>{r.phase2>0?`${r.phase1}+${r.phase2}`:"PTS"}</div>
           </div>
         </div>
       );})}
@@ -473,18 +478,77 @@ function Rules(){
   );
 }
 
+// ── BRACKET VIEW ──
+function BracketView({knockout,brackets,board,me}){
+  if(!knockout) return <Loading/>;
+  const matches = knockout.matches||[];
+  const ko = knockout.koByPair||{};
+  // group knockout matches by round size isn't in the feed, so show by status: live, completed, upcoming
+  const sorted = matches.slice().sort((a,b)=>new Date(a.datetime)-new Date(b.datetime));
+  const anyKO = sorted.length>0;
+
+  // bracket leaderboard = phase2 points from board
+  const brBoard = (board?.leaderboard||[]).slice()
+    .map(r=>({username:r.username, p2:r.phase2||0, total:r.points}))
+    .sort((a,b)=>b.p2-a.p2);
+
+  return (
+    <div className="sec">
+      <SecLabel>BRACKET STANDINGS (KNOCKOUT PTS)</SecLabel>
+      {brBoard.map((r,i)=>(
+        <div key={r.username} style={{display:"flex",alignItems:"center",gap:10,background:"#fff",
+          border:`1px solid ${C.line}`,borderRadius:11,padding:"9px 12px",marginBottom:6}}>
+          <span style={{fontFamily:F_DISP,fontSize:20,minWidth:22,textAlign:"center",
+            color:i===0?C.gold:C.mute}}>{i+1}</span>
+          <span style={{flex:1,fontWeight:r.username===me?700:600,fontSize:14,overflow:"hidden",
+            textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.username}{r.username===me?" (you)":""}</span>
+          <span style={{fontFamily:F_DISP,fontSize:22,color:C.grass}}>{r.p2}</span>
+        </div>
+      ))}
+
+      <div style={{height:18}}/>
+      <SecLabel>KNOCKOUT RESULTS</SecLabel>
+      {!anyKO && <Card><span style={{color:C.mute,fontSize:13}}>Knockout games will appear here as they're scheduled.</span></Card>}
+      {sorted.map((m,idx)=>{
+        const playing=m.status==="in_progress", done=m.status==="completed";
+        const t=new Date(m.datetime).toLocaleDateString(undefined,{month:"short",day:"numeric"});
+        const key=[m.home,m.away].sort().join("|");
+        const winner=ko[key]?.winner;
+        return (
+          <div key={idx} style={{background:"#fff",border:`1px solid ${playing?C.live:C.line}`,
+            borderRadius:12,padding:"10px 13px",marginBottom:7}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+              <span style={{fontSize:11,color:C.mute}}>{playing?<span style={{color:C.live,fontWeight:700}}>● LIVE</span>:done?"FT":t}</span>
+            </div>
+            <KORow team={m.home} score={m.homeScore} show={playing||done} win={winner===m.home}/>
+            <KORow team={m.away} score={m.awayScore} show={playing||done} win={winner===m.away}/>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+function KORow({team,score,show,win}){
+  return <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"3px 0"}}>
+    <span style={{fontSize:14,fontWeight:win?700:600,color:win?C.ink:C.mute}}>
+      {FLAG[team]} {team} {win?"✓":""}
+    </span>
+    <span style={{fontFamily:F_DISP,fontSize:20,color:show?C.ink:"transparent"}}>{show?(score??0):"–"}</span>
+  </div>;
+}
+
 // ── shared UI ──
 function Nav({tab,setTab}){
-  const items=[["home","Home","⌂"],["leaderboard","Board","≡"],["mypicks","Mine","★"],
-    ["everyone","All","⚇"],["rules","Rules","?"]];
+  const items=[["home","Home","⌂"],["leaderboard","Board","≡"],["bracket","Bracket","⛛"],
+    ["mypicks","Mine","★"],["everyone","All","⚇"],["rules","Rules","?"]];
   return (
     <div style={{position:"fixed",bottom:0,left:0,right:0,maxWidth:430,margin:"0 auto",
-      background:"#fff",borderTop:`1px solid ${C.line}`,display:"flex",padding:"6px 4px 8px"}}>
+      background:"#fff",borderTop:`1px solid ${C.line}`,display:"flex",padding:"6px 2px 8px"}}>
       {items.map(([k,lbl,ic])=>(
         <button key={k} onClick={()=>setTab(k)} style={{flex:1,background:"none",border:"none",
-          cursor:"pointer",padding:"6px 2px",color:tab===k?C.grass:C.mute,fontFamily:F_BODY}}>
-          <div style={{fontSize:20,lineHeight:1}}>{ic}</div>
-          <div style={{fontSize:10.5,fontWeight:tab===k?700:500,marginTop:3}}>{lbl}</div>
+          cursor:"pointer",padding:"6px 1px",color:tab===k?C.grass:C.mute,fontFamily:F_BODY}}>
+          <div style={{fontSize:18,lineHeight:1}}>{ic}</div>
+          <div style={{fontSize:9.5,fontWeight:tab===k?700:500,marginTop:3}}>{lbl}</div>
         </button>
       ))}
     </div>
